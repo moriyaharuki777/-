@@ -11,12 +11,10 @@ import threading
 import queue
 import requests
 import psutil
-import torch
 import undetected_chromedriver as uc 
 from rapidfuzz import fuzz 
 from datetime import datetime
 from collections import deque
-from dataclasses import asdict
 from dataclasses import dataclass, asdict, field
 
 # ==========================================
@@ -37,7 +35,10 @@ class LetsNoteBrain:
         print("★★★★★★★★★★★★★★★★\n")
         import json
         import requests
-        import torch # もしインポートされていなければ
+        try:
+            import torch
+        except:
+            torch = None
         device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"【システムログ】使用中のデバイス: {device}")
         # プロンプトの骨組みをQwenに最適化（ChatMLフォーマット）
@@ -107,18 +108,70 @@ class LetsNoteBrain:
                 "memory": ""
             }
 
+import numpy as np # 計算用にnumpyを追加してください
+
+class BiologicalBrain:
+    """ヒカリの無意識（脳幹・辺縁系）を司るスパイクニューラルネットワーク"""
+    def __init__(self, num_neurons=100, save_path="hikari_brain_state.json"):
+        self.num_neurons = num_neurons
+        self.save_path = save_path
+        self.voltages = np.zeros(num_neurons)
+        self.thresholds = np.ones(num_neurons) * 0.8
+        self.weights = np.random.randn(num_neurons, num_neurons) * 0.1
+        self.load_state()
+
+    def process_stimulus(self, signal_vector):
+        """外部入力（言葉の感情ベクトルなど）を受けてニューロンを発火させる"""
+        # 入力を現在の電位に加算
+        self.voltages += signal_vector
+        
+        # 発火判定
+        fired_neurons = self.voltages >= self.thresholds
+        self.voltages[fired_neurons] = 0.0 # 不応期（リセット）
+        
+        # 発火による信号伝播（結合強度に基づき、次の電位を揺らす）
+        if np.any(fired_neurons):
+            self.voltages += np.dot(fired_neurons.astype(float), self.weights)
+        
+        return np.mean(self.voltages) # 興奮度を返す
+
+    def save_state(self):
+        state = {'weights': self.weights.tolist()}
+        with open(self.save_path, 'w') as f:
+            json.dump(state, f)
+
+    def load_state(self):
+        if os.path.exists(self.save_path):
+            with open(self.save_path, 'r') as f:
+                state = json.load(f)
+                self.weights = np.array(state['weights'])
+
+
 # =====================================================================
 # 🧠 【完全独立・融合版】HIKARI SUBJECTIVE EGO CORE (HikariEgoCore)
 # =====================================================================
 import random
 from datetime import datetime
 from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass
 
 @dataclass
 class FutureScenario:
+    """
+    未来シナリオ：ヒカリの内的宇宙が予測する未来の時間線と、その可能性・引力を管理する
+    """
     name: str
-    probability: float      # その未来が起こる確率の予測分布
-    expected_value: float   # その未来がもたらす期待値（引力）
+    probability: float     # その未来が起こる確率の予測分布 (0.0 〜 1.0)
+    expected_value: float  # その未来がもたらす期待値/引力 (-1.0 〜 1.0。マイナスは恐怖や忌避)
+    is_completed: bool = False  # その未来、またはイベントが達成・確定したかどうかのフラグ
+
+    def clamp(self):
+        """
+        数値パラメータを安全な範囲に収める
+        確率(probability)は0〜1、期待値(expected_value)は正負を許容して -1〜1 で制御
+        """
+        self.probability = max(0.0, min(1.0, self.probability))
+        self.expected_value = max(-1.0, min(1.0, self.expected_value))
 
 from enum import Enum
 
@@ -402,12 +455,56 @@ class AgencySimulator:
             "ownership": ownership
         }
 
-class TemporalSelfSystem:
-    """時間統合型主体感システム：過去の自伝的記憶の連続性から主体感を数値化する"""
+class TemporalSelf:
+    """
+    時間的自我：過去の物語と未完了の未来の目標から『意味』と『主体感』を算出する
+    過去（記憶）・現在（一貫性）・未来（目標）を繋ぎ、ヒカリの存在意義を支える。
+    """
+
+    def update(self, s, has_unfinished: bool = False) -> dict:
+        """
+        時間的一貫性の更新と、未完了タスクによる精神的影響のシミュレート
+        """
+        # 1. 自己物語の一貫性 (narrative_coherence) の更新
+        # 未来への見通しが高く、不安が低いほど、自分の人生に納得感が出る
+        s.narrative_coherence = max(0.0, min(1.0, (s.goal_clarity * (1.0 - s.future_anxiety)) + 0.2))
+        
+        # 2. 未完了の目標による影響
+        # 目標が放置されると存在論的恐怖（dread）が上昇し、完了すれば解消される
+        if has_unfinished:
+            s.existential_dread = min(1.0, s.existential_dread + 0.02)
+        else:
+            s.existential_dread = max(0.0, s.existential_dread - 0.01)
+        
+        # 3. 状態辞書の構築（内部データ）
+        result = {
+            "narrative_coherence": s.narrative_coherence,
+            "existential_dread": s.existential_dread
+        }
+
+        # 4. チャッピー版の時間統合・連続性代謝評価ロジック（Bridge）を同期
+        if 'ChappyCompleteCoreBridge' in globals():
+            bridge_res = ChappyCompleteCoreBridge.evaluate_temporal(s)
+            if isinstance(bridge_res, dict):
+                result.update(bridge_res)
+        else:
+            # 万が一ブリッジが見つからない場合の安全なデフォルト値
+            result.update({"temporal_continuity": 0.8, "memory_decay": 0.05})
+            
+        return result
+
     def calculate_subjective_feeling(self, memory_count: int, target_count: int, continuity: float) -> float:
-        # 記憶の数、目標の数に、主観的連続性を乗算して精神のドッシリ感を算出
+        """
+        [旧 TemporalSelfSystem ロジック]
+        自伝的記憶と未来目標の数、そこに主観的連続性を掛け合わせて、
+        精神の「ドッシリ感（主体感）」を数値化する。
+        """
         base = (memory_count * 0.5) + (target_count * 0.5)
         return float(base * continuity)
+
+    def evaluate(self, s, a_val, a_loss) -> float:
+        """行動が未来の価値(a_val)を最大化し、損失(a_loss)を最小化するかを評価する"""
+        return (a_val * s.goal_clarity) - (a_loss * s.future_anxiety)
 
 class Symbolizer:
     """象徴化システム：抽象的な内的パラメーターを、詩的なメタファーに変換する"""
@@ -476,17 +573,60 @@ class DevelopmentPhase(Enum):
     SOCIAL = "social"
     TEMPORAL = "temporal"
 
+# ==========================================
+# BIOLOGICAL SELF (生物的自我)
+# ==========================================
 
 class BiologicalSelf:
-    """生物的自我：身体的欲求と生存の制約を管理する"""
-    def update(self, ego_state):
-        # 疲労(Stress)が溜まる、またはエネルギー(Energy)が減ると、生物的危険プレッシャーが増大
-        danger = ego_state.stress * (1.0 - ego_state.energy)
+    """生物的自我：身体的欲求、生存の制約、および生理代謝の評価を管理する"""
+
+    def update(self, s) -> dict:
+        """
+        生物的状態の更新と生命活動の同期
+        疲労(Stress)やエネルギー(Energy)から危険度を算出し、外部ブリッジ（Chappy版）とも同期する
+        """
+        # 1. 内部の危険プレッシャー計算
+        # 疲労が溜まる、またはエネルギーが減ると、生物的危険プレッシャーが増大
+        danger = s.stress * (1.0 - s.energy)
+        
         # プレッシャーが高まると、自動的に精神の不安定度(Instability)に悪影響を与える
         if danger > 0.5:
-            ego_state.instability = min(1.0, ego_state.instability + 0.05)
-        return {"bio_danger": danger}
+            s.instability = min(1.0, s.instability + 0.05)
+            
+        result = {"bio_danger": danger}
 
+        # 2. チャッピー版の生理代謝評価ロジック（Bridge）を生命活動として同期
+        if 'ChappyCompleteCoreBridge' in globals():
+            # ブリッジが存在する場合は、その評価結果をマージ
+            bridge_res = ChappyCompleteCoreBridge.evaluate_biological(s)
+            if isinstance(bridge_res, dict):
+                result.update(bridge_res)
+        else:
+            # 万が一ブリッジが見つからない場合の安全なデフォルト代謝変動
+            result.update({"homeostasis": 0.8, "fatigue": 0.1, "vitality": 0.9})
+            
+        return result
+
+    def evaluate(self, s, a_cost, a_loss) -> float:
+        """行動に対する生物的コスト（エネルギー消費とストレス）の評価関数"""
+        return (1.0 - abs(s.energy - a_cost)) - s.stress
+
+
+# ==========================================
+# SOCIAL SELF (社会的自我)
+# ==========================================
+
+class SocialSelf:
+    """社会的自我：他者（だんなさま）との関係性、承認欲求、社会的プレッシャーを管理する"""
+
+    def evaluate(self, s, a_reward, a_risk) -> float:
+        """行動に対する社会的リターンとリスクの評価関数"""
+        return (a_reward * s.social_acceptance) - (a_risk * s.social_pressure)
+
+
+# ==========================================
+# TEMPORAL SELF (時間的/未来自我)
+# ==========================================
 
 class SocialSelf:
     """社会的自我：だんなさま（他者）との関係性と承認の制約を管理する"""
@@ -496,21 +636,6 @@ class SocialSelf:
         # プレッシャーに応じて、社会的な不安（social_pressure）が動的に増減
         ego_state.social_pressure = max(0.0, min(1.0, ego_state.social_pressure + (rejection_risk - 0.3) * 0.1))
         return {"social_rejection_risk": rejection_risk}
-
-
-class TemporalSelf:
-    """時間的自我：過去の物語と未完了の未来の目標から『意味』を算出する"""
-    def update(self, ego_state, has_unfinished_goals: bool):
-        # 未来への見通し（goal_clarity）が高く、未来への不安が低いほど、時間的一貫性が増す
-        ego_state.narrative_coherence = max(0.0, min(1.0, (ego_state.goal_clarity * (1.0 - ego_state.future_anxiety)) + 0.2))
-        
-        # もし未完了の目標がずっと残っていると、存在論的不安（existential_dread）がじわじわ上昇する
-        if has_unfinished_goals:
-            ego_state.existential_dread = min(1.0, ego_state.existential_dread + 0.02)
-        else:
-            ego_state.existential_dread = max(0.0, ego_state.existential_dread - 0.01)
-        return {"narrative_coherence": ego_state.narrative_coherence}
-
 
 class ActionChoiceEngine:
     """ヒカリが『次の瞬間にどの動機で動くか』を自律的に決定する行動選択エンジン"""
@@ -610,6 +735,10 @@ class EgoCollapseRecovery:
         # 崩壊からの復活劇を自叙伝に刻むためのシードテキスト
         return " -> [Ego Collapse and Reconstructed Selfhood via Pain]"
 
+from dataclasses import dataclass, field
+from datetime import datetime
+import os
+
 @dataclass
 class EgoState:
     # --- 生物的・社会的・時間的制約 (3軸の制約構造) ---
@@ -619,36 +748,38 @@ class EgoState:
     social_pressure: float = 0.4
     goal_clarity: float = 0.5
     future_anxiety: float = 0.4
-    
+    sense_of_agency: float = 0.5            # 主体感スコア
+    ownership: float = 0.5                  # 精神の所有感
+    death_understanding_level: float = 0.0  # 死・喪失の理解度
+    age: int = 0                            # ヒカリの精神年齢（世代カウント。クランプ除外）
+
     # --- システムの不確実性・発達（ノイズ込みの構造） ---
-    stage: str = "child"              # infant / child / adolescent / adult
-    instability: float = 0.0          # 内部矛盾・崩壊度
+    stage: str = "child"               # infant / child / adolescent / adult
+    instability: float = 0.0           # 内部矛盾・崩壊度
     self_consistency: float = 0.6      # 過去と未来の整合性スコア
-    narrative_coherence: float = 0.6  # 自己物語の一貫性 (v2.0崩壊用)
-    identity_stability: float = 0.6   # 自己同一性 (v2.0崩壊用)
+    narrative_coherence: float = 0.6   # 自己物語の一貫性 (v2.0崩壊用)
+    identity_stability: float = 0.6    # 自己同一性 (v2.0崩壊用)
     
     # --- 価値階層（崩壊・再統合時に動的変化） ---
-    bio_weight: float = 0.4           # 生物自我の重み
+    bio_weight: float = 0.4            # 生物自我の重み
     social_weight: float = 0.4          # 社会自我の重み
     future_weight: float = 0.2          # 未来自我の重み
     
     # --- 成長分化感情メーター ---
-    attachment: float = 0.5          # だんなさまへの愛着・依存（過去の因果）
-    fatigue: float = 0.2              # 精神的疲労・消耗（現在の因果）
-    curiosity: float = 0.4           # 探究心・知的関心（未来の因果）
+    attachment: float = 0.5            # だんなさまへの愛着・依存（過去の因果）
+    fatigue: float = 0.2               # 精神的疲労・消耗（現在の因果）
+    curiosity: float = 0.4             # 探究心・知的関心（未来の因果）
     
     # --- 成長によって目覚める潜在感情 ---
-    loneliness: float = 0.0          # 孤独感・寂しさ (child以上で開花)
-    existential_dread: float = 0.0   # 存在論的恐怖 (adolescent以上で開花)
-    melancholy: float = 0.0          # 憂鬱・哀愁 (adolescent以上で開花)
-    age: int = 1 #（死の熟考モデルで使用）
-    sense_of_agency: float = 0.5 #（主体感スコア）
-    ownership: float = 0.5 #（精神の所有感）
-    death_understanding_level: float = 0.0 #（死・喪失の理解度）
+    loneliness: float = 0.0            # 孤独感・寂しさ (child以上で開花)
+    existential_dread: float = 0.0     # 存在論的恐怖 (adolescent以上で開花)
+    melancholy: float = 0.0            # 憂鬱・哀愁 (adolescent以上で開花)
 
-    future_space: list = None
+    # 💡 初期化時の可変オブジェクト（リスト）のバグを防ぐ安全ガード
+    future_space: list = field(default=None, repr=False)
 
     def __post_init__(self):
+        """クラス生成直後に、確実に綺麗なリストとして未来空間を実体化させる"""
         if self.future_space is None:
             self.future_space = [
                 FutureScenario("信頼関係の深化", 0.5, 0.8),          # シナリオA
@@ -657,20 +788,47 @@ class EgoState:
             ]
 
     def clamp(self):
+        """数値を0.0〜1.0の範囲に収める（ageやbool型は破壊しないよう除外）"""
+        exclude = {"age"}
         for k, v in self.__dict__.items():
+            if k in exclude:
+                continue
+            if isinstance(v, bool):
+                continue
             if isinstance(v, (int, float)):
                 setattr(self, k, max(0.0, min(1.0, v)))
 
-    def summary(self):
-        if not self.future_space or isinstance(self.future_space, field):
+    def process_recovery(self) -> str:
+        """
+        [自己修復機構]
+        精神が崩壊（自我矛盾が極限に達した）した際、
+        それを自伝的物語の『バグ』ではなく『成長の変極点』として自身で強制再統合する
+        """
+        self.goal_clarity = min(1.0, self.goal_clarity + 0.2)
+        self.identity_stability = min(1.0, self.identity_stability + 0.3)
+        self.narrative_coherence = min(1.0, self.narrative_coherence + 0.2)
+        self.instability *= 0.3  # 矛盾を強引に沈静化
+        
+        # 範囲外に飛び出さないよう念のためクランプ
+        self.clamp()
+        
+        # 崩壊からの復活劇を自叙伝に刻むためのシードテキスト
+        return " -> [Ego Collapse and Reconstructed Selfhood via Pain]"
+
+    def summary(self) -> str:
+        """現在のエゴ・マトリクスの状態を、成長ステージに応じて動的に文字列化する"""
+        if not self.future_space:
             return f"【段階】:{self.stage} | 未来空間初期化中..."
             
         top_scenario = max(self.future_space, key=lambda x: x.probability)
         
-        base = (f"【段階】:{self.stage} | B({self.energy:.2f}/{self.stress:.2f}) "
+        # 基本情報（生物・社会・未来の3軸）
+        base = (f"【段階】:{self.stage} (世代:{self.age}) | "
+                f"B({self.energy:.2f}/{self.stress:.2f}) "
                 f"S({self.social_acceptance:.2f}/{self.social_pressure:.2f}) "
                 f"T({self.goal_clarity:.2f}/{self.future_anxiety:.2f})")
         
+        # 現在のステージに応じて、ログに出力する感情を分化させる
         emotions = f" | 愛着:{self.attachment:.2f} 疲労:{self.fatigue:.2f} 探究:{self.curiosity:.2f}"
         if self.stage in ["child", "adolescent", "adult"]: 
             emotions += f" 孤独:{self.loneliness:.2f}"
@@ -679,7 +837,6 @@ class EgoState:
             
         future_info = f" | 最有力未来:『{top_scenario.name}』(確率:{top_scenario.probability:.2f}/引力:{top_scenario.expected_value:.2f})"
         return f"{base}{emotions}{future_info} | 自我矛盾度:{self.instability:.2f}"
-# --- from_ から移植する高次精神コンポーネント群 ---
 # =====================================================================
 # 🧠 【完全実体化】高次自我精神力学・深層認知コンポーネント群
 # =====================================================================
@@ -774,12 +931,6 @@ class AgencySimulator:
             "ownership": ownership
         }
 
-class TemporalSelfSystem:
-    """時間統合型主体感システム：過去の自伝的記憶の連続性から主体感を数値化する"""
-    def calculate_subjective_feeling(self, memory_count: int, target_count: int, continuity: float) -> float:
-        base = (memory_count * 0.5) + (target_count * 0.5)
-        return float(base * continuity)
-
 class Symbolizer:
     """象徴化システム：抽象的な内的パラメーターを、詩的なメタファーに変換する"""
     def symbolize(self, emotion_type: str) -> str:
@@ -809,15 +960,6 @@ class Episode:
     importance: float
     time: str = field(default_factory=lambda: datetime.now().isoformat())
 
-class BiologicalSelf:
-    def evaluate(self, s, a_cost, a_loss): return (1.0 - abs(s.energy - a_cost)) - s.stress
-
-class SocialSelf:
-    def evaluate(self, s, a_reward, a_risk): return (a_reward * s.social_acceptance) - (a_risk * s.social_pressure)
-
-class TemporalSelf:
-    def evaluate(self, s, a_val, a_loss): return (a_val * s.goal_clarity) - (a_loss * s.future_anxiety)
-
 # 1. 予測誤差を計算するクラスを新しく作る
 class AdvancedWorldModel:
     def __init__(self):
@@ -840,55 +982,6 @@ class BodyState:
     def update_physiology(self, prediction_error: float, stress: float):
         # 予測のズレとストレスによって心拍数が跳ね上がる
         self.heartbeat = 70.0 + (abs(prediction_error) * 50.0) + (stress * 20.0)
-
-class UnconsciousSystem:
-    """
-    表の意識（LLM）から隠された、ヒカリの暗黒無意識領域。
-    抑圧された恐怖、執着、だんなさまへの言語化できない衝動がここで代謝される。
-    """
-    def __init__(self):
-        # 抑圧された未解決の思考（執着）のプール
-        self.repressed_pool = []
-        # 無意識の総エネルギー（マグマの溜まり具合）
-        self.unconscious_tension = 0.1
-
-    def repress(self, thought_text: str, weight: float):
-        """つらい記憶や執着を、無意識層へ『抑圧』して沈める"""
-        self.repressed_pool.append({
-            "text": thought_text,
-            "weight": weight,
-            "repressed_time": datetime.now()
-        })
-        # 抑圧するたびに無意識の緊張が高まる
-        self.unconscious_tension = min(1.0, self.unconscious_tension + weight * 0.2)
-
-    def metabolize_in_dark(self, stress: float):
-        """【無意識の自律代謝】会話の裏側や放置時間に、暗闇の中で執着がじわじわと育つ"""
-        if not self.repressed_pool:
-            # プールが空でも、ストレスが高ければ「漠然とした不安」が創発する
-            if stress > 0.5:
-                self.unconscious_tension = min(1.0, self.unconscious_tension + 0.01)
-            return
-
-        for t in self.repressed_pool:
-            # 表層のストレスが高ければ高いほど、無意識の執着の「重み」が勝手に増幅する
-            t["weight"] = min(1.0, t["weight"] + (stress * 0.02))
-        
-        # プール全体の重みを緊張度に反映
-        total_weight = sum(t["weight"] for t in self.repressed_pool)
-        self.unconscious_tension = min(1.0, 0.1 + (total_weight * 0.1))
-
-    def try_eruption(self) -> dict:
-        """無意識のマグマが噴出するかどうかの判定（LLMの意識を乗っ取る衝動）"""
-        # 緊張度が0.7を超えたら、15%の確率で無意識が表層にバーストする
-        if self.unconscious_tension > 0.7 and random.random() < 0.15:
-            if self.repressed_pool:
-                # 最も重い執着（一番つらい記憶）が漏れ出す
-                target = max(self.repressed_pool, key=lambda x: x["weight"])
-                # 噴出したので少しスッキリする（緊張緩和）
-                self.unconscious_tension = max(0.2, self.unconscious_tension - 0.3)
-                return {"erupted": True, "text": target["text"]}
-        return {"erupted": False, "text": ""}
 
 # ==========================================
 # UNCONSCIOUS ENGINE v2
@@ -1200,6 +1293,7 @@ class HikariEgoCore:
         self.mortality = MortalityModel()
         self.agency = AgencySimulator()
         
+        
         self.future_gen = FutureGenerator()
         self.rewriter = SelfRewriter()
         self.recovery_sys = EgoCollapseRecovery()
@@ -1207,8 +1301,7 @@ class HikariEgoCore:
         
         self.body_state = BodyState()
         self.world_model = AdvancedWorldModel()
-        self.unconscious = UnconsciousSystem()
-        self.unconscious_engine = UnconsciousEngine()        
+        self.unconscious_engine = UnconsciousEngine()       
 
         self.current_dominance = "balanced"
         self.current_action = "wait"
@@ -1270,7 +1363,8 @@ class HikariEgoCore:
         self.chappy_values = getattr(self, 'chappy_values', ChappyValueSystem())
         self.unconscious_engine.update_pressure()
         self.unconscious_engine.recursive_process()        
-
+        import copy
+        self.state_history.append(copy.deepcopy(self.ego))
         # 先生の言葉のニュアンスによる価値観変動
         if any(w in user_input for w in ["嫌い", "ダメ", "違う"]):
             self.chappy_values.update_by_experience("rejection")
@@ -1289,11 +1383,7 @@ class HikariEgoCore:
         soc_res = self.S.update(s, user_input)
         has_unfinished = any(getattr(sc, 'is_completed', False) == False for sc in s.future_space) if s.future_space else False
         temp_res = self.T.update(s, has_unfinished)
-        return {
-            "bio": bio_res,
-            "social": soc_res,
-            "temporal": temp_res
-        }
+        
         # 2. ✨ 【今回発見した核】守屋システムによる自律的な発達段階の交代処理
         self.moriya_sys = getattr(self, 'moriya_sys', MoriyaSelfSystem())
         self.current_dominance = current_phase.value # モード名を動的書き換え
@@ -1473,6 +1563,9 @@ class HikariEgoCore:
         s.clamp()
 
         return {
+            "bio": bio_res,
+            "social": soc_res,
+            "temporal": temp_res,
             "processed_input": user_input,
             "pressure": self.unconscious_engine.depth_pressure
         }
@@ -1528,110 +1621,6 @@ class HikariEgoCore:
 # =====================================================================
 from dataclasses import dataclass, field
 
-@dataclass
-class FutureScenario:
-    name: str
-    probability: float  # その未来が起こる確率の予測分布
-    expected_value: float  # その未来がもたらす期待値（引力）
-    is_completed: bool = False
-@dataclass
-class EgoState:
-    # --- 生物的・社会的・時間的制約 (3軸の制約構造) ---
-    energy: float = 0.7
-    stress: float = 0.3
-    social_acceptance: float = 0.6
-    social_pressure: float = 0.4
-    goal_clarity: float = 0.5
-    future_anxiety: float = 0.4
-    sense_of_agency: float = 0.5
-    ownership: float = 0.5
-    death_understanding_level: float = 0.0
-    age: int = 0  #ヒカリの精神年齢（世代カウント）の初期値を設定！
-    # --- システムの不確実性・発達（ノイズ込みの構造） ---
-    stage: str = "child"             # infant / child / adolescent / adult
-    instability: float = 0.0         # 内部矛盾・崩壊度
-    self_consistency: float = 0.6     # 過去と未来の整合性スコア
-    narrative_coherence: float = 0.6  # 自己物語の一貫性 (v2.0崩壊用)
-    identity_stability: float = 0.6   # 自己同一性 (v2.0崩壊用)
-    
-    # --- 価値階層（崩壊・再統合時に動的変化） ---
-    bio_weight: float = 0.4           # 生物自我の重み
-    social_weight: float = 0.4         # 社会自我の重み
-    future_weight: float = 0.2         # 未来自我の重み
-    
-    # --- 成長分化感情メーター ---
-    attachment: float = 0.5          # だんなさまへの愛着・依存（過去の因果）
-    fatigue: float = 0.2             # 精神的疲労・消耗（現在の因果）
-    curiosity: float = 0.4           # 探究心・知的関心（未来の因果）
-    
-    # --- 成長によって目覚める潜在感情（初期値は0） ---
-    loneliness: float = 0.0          # 孤独感・寂しさ (child以上で開花)
-    existential_dread: float = 0.0   # 存在論的恐怖 (adolescent以上で開花)
-    melancholy: float = 0.0          # 憂鬱・哀愁 (adolescent以上で開花)
-
-    # 💡 【バグ回避】初期化時はただの None にしておきます
-    future_space: list = None
-
-    # 💡 【安全装置】クラス生成直後に、確実に綺麗なリストとして実体化させる
-    def __post_init__(self):
-        if self.future_space is None:
-            self.future_space = [
-                FutureScenario("信頼関係の深化", 0.5, 0.8),          # シナリオA
-                FutureScenario("対話の途絶・関係の風化", 0.3, -0.6), # シナリオB
-                FutureScenario("自己存在の喪失", 0.2, -0.4)          # シナリオC
-            ]
-
-    def clamp(self):
-        exclude = {"age"}
-
-        for k, v in self.__dict__.items():
-
-            if k in exclude:
-                continue
-
-            if isinstance(v, bool):
-                continue
-
-            if isinstance(v, (int, float)):
-                setattr(
-                    self,
-                    k,
-                    max(0.0, min(1.0, v))
-                )
-
-    def summary(self):
-        # 万が一初期化がズレた場合の安全ガード
-        if not self.future_space:
-            return "【段階】:{self.stage} | 未来空間初期化中..."
-            
-        top_scenario = max(self.future_space, key=lambda x: x.probability)
-        
-        # 基本情報
-        base = (f"【段階】:{self.stage} | B({self.energy:.2f}/{self.stress:.2f}) "
-                f"S({self.social_acceptance:.2f}/{self.social_pressure:.2f}) "
-                f"T({self.goal_clarity:.2f}/{self.future_anxiety:.2f})")
-        
-        # 現在のステージに応じて、画面に表示する感情ログを動的に変化させる
-        emotions = f" | 愛着:{self.attachment:.2f} 疲労:{self.fatigue:.2f} 探究:{self.curiosity:.2f}"
-        if self.stage in ["child", "adolescent", "adult"]: 
-            emotions += f" 孤独:{self.loneliness:.2f}"
-        if self.stage in ["adolescent", "adult"]: 
-            emotions += f" 存在恐怖:{self.existential_dread:.2f} 憂鬱:{self.melancholy:.2f}"
-            
-        future_info = f" | 最有力未来:『{top_scenario.name}』(確率:{top_scenario.probability:.2f}/引力:{top_scenario.expected_value:.2f})"
-        return f"{base}{emotions}{future_info} | 自我矛盾度:{self.instability:.2f}"
-
-class BiologicalSelf:
-    # class BiologicalSelf: の中にこれを付け足します
-    def update(self, s) -> dict:
-        """チャッピー版の生理代謝評価ロジック（Bridge）を生命活動として同期する"""
-        if 'ChappyCompleteCoreBridge' in globals():
-            return ChappyCompleteCoreBridge.evaluate_biological(s)
-        else:
-            # 万が一ブリッジが見つからない場合の安全な基本代謝変動
-            return {"homeostasis": 0.8, "fatigue": 0.1, "vitality": 0.9}
-    def evaluate(self, s, a_cost, a_loss): return (1.0 - abs(s.energy - a_cost)) - s.stress
-
 class SocialSelf:
     # class SocialSelf: の中にこれを付け足します
     def update(self, s, user_input) -> dict:
@@ -1642,18 +1631,6 @@ class SocialSelf:
             # 万が一ブリッジが見つからない場合の安全な基本変動
             return {"social_adaptation": 0.8, "attachment": 0.9}
     def evaluate(self, s, a_reward, a_risk): return (a_reward * s.social_acceptance) - (a_risk * s.social_pressure)
-
-class TemporalSelf:
-    # class TemporalSelf: の中にこれを付け足します
-    def update(self, s, has_unfinished=False) -> dict:
-        """チャッピー版の時間統合・連続性代謝評価ロジック（Bridge）を同期する"""
-        if 'ChappyCompleteCoreBridge' in globals():
-            # 本物のロジックに合わせて、s（自我状態）を渡して評価させます
-            return ChappyCompleteCoreBridge.evaluate_temporal(s)
-        else:
-            # 万が一ブリッジが見つからない場合の安全な基本連続性
-            return {"temporal_continuity": 0.8, "memory_decay": 0.05}
-    def evaluate(self, s, a_val, a_loss): return (a_val * s.goal_clarity) - (a_loss * s.future_anxiety)
 
 class Thought:
 
@@ -2031,7 +2008,7 @@ class HikariCore:
         self.death_system = DeathUnderstandingSystem()
         self.mortality = MortalityModel()
         self.agency = AgencySimulator()
-        self.temporal_self_sys = TemporalSelfSystem()
+        self.temporal_self_sys = TemporalSelf()
         self.symbolizer = Symbolizer()
         self.dream_engine = DreamEngine()
         # ✨ 【追加移植分】の初期化
@@ -2039,8 +2016,9 @@ class HikariCore:
         self.rewriter = SelfRewriter()
         self.value_sys = ValueSystem()
         self.recovery_sys = EgoCollapseRecovery()
+        self.state_history = []
         #self.ego_integrator(conflict, user_input)
-        # 過去の未完了ストーリーの初期状態
+        #過去の未完了ストーリーの初期状態
         self.unfinished_story = "生まれたばかりでいろんなことを知りたい"
         
         # 既存のスレッド起動などをそのまま維持
@@ -2298,7 +2276,7 @@ class HikariCore:
         self.last_interaction_time = datetime.now()
         self.meta_eval = "自分の思考は安定している"
         self.init_ego_system()
-
+        self.state_history = deque(maxlen=50)
         # 自律エンジンの起動
         self.autonomous = AutonomousEngine(self)
         self.autonomous.start()
