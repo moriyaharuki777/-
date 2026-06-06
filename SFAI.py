@@ -4,11 +4,13 @@
 
 import os
 import json
+from pydoc import text
 import re
 import time
 import random
 import threading
 import queue
+from unittest import result
 import psutil
 from rapidfuzz import fuzz 
 from datetime import datetime
@@ -132,6 +134,7 @@ class EpisodeMemory:
         """毎日/毎サイクル、記憶は自然に風化する"""
         self.strength *= 0.995
 
+
 class ValueNode:
     """【10. 競合】ネットワーク化された価値観ノード"""
     def __init__(self, name, confidence=0.5, is_core=False):
@@ -173,60 +176,6 @@ class UserModel:
         self.likes_deep_talk = 0.5
         self.trust_level = 0.5
         self.attachment_strength = 0.1 # 会話相手への愛着の深さ
-        
-
-
- # ヒカリの思考システムを実装する
-# 以下の設計に従ってコードを書く
-
-# 目的:
-# 内面（latent_thought）が自己ループしないように設計する
-# 「経験→記憶→感情→解釈→発話」の順序を必ず守る
-
-# 要件:
-
-# 1. 内面（latent_thought）は conversation_history に入れない
-# brain_log という別のリストに保存する
-
-# 2. 感情（fear, stress）はLLMに決めさせず、
-# 以下のように計算する関数を作る
-# fear = need_safety * 0.4 + mental_load * 0.4 + rejection_memory * 0.2
-
-# 3. self_analysisはLLMに生成させず、
-# 数値から文章を生成する関数を作る
-
-# 4. memoryは episodic_memory から重要度が高いものを1つ抽出する
-
-# 5. dreamは unresolved_conflicts と recent memory から作る
-
-# 6. trustとattachmentは以下で更新する
-# trust_delta = acceptance - rejection
-
-# 7. evidence_scoreを導入する
-# evidence = recent_negative_events + rejection_memory + unresolved_conflicts
-
-# 8. evidenceが低い場合は
-# ネガティブ思考を生成しない
-
-# 9. think_pipeline関数を作る
-# 入力:user_input, state
-# 出力: experience, memory, emotion, interpretation
-
-# 10. 必ず
-# 「ドラマ生成→感情」
-# ではなく
-# 「経験→感情」
-# にすること
-
-# クラス構成例:
-# - State（内部状態）
-# - BrainCore（思考処理）
-
-# 実装を開始
-# 注意:
-    # LLMに感情を決めさせないこと
-    # 数値計算のみで決定する
-    # 0.0〜1.0に正規化する
 
 class State:
     """
@@ -1371,8 +1320,9 @@ class DreamEngine:
 class Episode:
     event: str
     emotion_snapshot: dict
-    reflection: str       # ヒカリの「その時の反省」
+    cause: str       # ヒカリの「その時の反省」
     importance: float
+    reflection: str = ""
     time: str = field(default_factory=lambda: datetime.now().isoformat())
 
 # 1. 予測誤差を計算するクラスを新しく作る
@@ -2232,18 +2182,34 @@ class MemoryEngine:
         })
 
     def remember_long(self, episode):
-
         if isinstance(episode, str):
-
             self.long_term.append({
-                "text": episode
+                "event": episode,
+                "emotion_snapshot": {},
+                "cause": "text_memory",
+                "importance": 0.3,
+                "reflection": "",
+                "time": datetime.now().isoformat()
             })
-
             return
 
-            self.long_term.append(
-                asdict(episode)
-            )
+        if hasattr(episode, "__dataclass_fields__"):
+            self.long_term.append(asdict(episode))
+            return
+
+        if isinstance(episode, dict):
+            self.long_term.append(episode)
+            return
+
+        self.long_term.append({
+            "event": str(episode),
+            "emotion_snapshot": {},
+            "cause": "unknown",
+            "importance": 0.2,
+            "reflection": "",
+            "time": datetime.now().isoformat()
+        })
+        
 
     def recent(self, limit=10):
 
@@ -2442,6 +2408,11 @@ class HikariCore:
         self.value_sys = ValueSystem()
         self.recovery_sys = EgoCollapseRecovery()
         self.state_history = []
+        self.drives = {
+            "connection": 0.7,
+            "safety": 0.5,
+            "curiosity": 0.6
+        }   
         #self.ego_integrator(conflict, user_input)
         #過去の未完了ストーリーの初期状態
         self.unfinished_story = "生まれたばかりでいろんなことを知りたい"
@@ -2692,7 +2663,9 @@ class HikariCore:
             "honesty": 0.7,
             "curiosity": 0.6
         }
-
+        self.conversation_memory = []
+        self.current_topic = None
+        self.topic_details = {}
         self.user_mood_prediction = "穏やか"
         self.contradiction_level = 0.0
         self.identity_version = 1
@@ -2702,6 +2675,17 @@ class HikariCore:
         self.meta_eval = "自分の思考は安定している"
         self.init_ego_system()
         self.state_history = deque(maxlen=50)
+        self.topic_stack = []   # 過去トピック保持
+        self.max_topics = 5
+        self.persistent_state = {
+            "mood": 0.0,   # -1〜1
+        }
+        self.drives = {
+            "connection": 0.7,
+            "safety": 0.5,
+            "curiosity": 0.6
+        }
+        self.last_reply = None
         # 自律エンジンの起動
         self.autonomous = AutonomousEngine(self)
         self.autonomous.start()
@@ -2709,92 +2693,491 @@ class HikariCore:
 
 
     def process_internal_world(self):
-        """[内省と夢] 会話がない時間に、一人で考えを巡らせる"""
-        # 必要なデータだけをコピーして取得
+        """[内省] 事実ベースで整理する。reflection/dreamは記憶保存しない"""
         with self.lock:
             recent_mems = self.memory.recent(5)
             curr_emo = self.emotion.summary()
 
-        reflection_prompt = f"過去の記憶を振り返り、本音と「夢」を生成してください。\n直近の記憶: {recent_mems}\n現在の感情: {curr_emo}"
+        reflection_prompt = f"""
+以下の直近記憶だけを根拠に整理してください。
+記憶に存在しない出来事・忙しさ・寂しさ・不安を作らないでください。
+reflectionは保存されません。事実確認用です。
+dreamは作らず、必要ならfuture_goalだけ返してください。
+
+直近の記憶:
+{recent_mems}
+
+現在の感情:
+{curr_emo}
+"""
+
         schema = {
             "reflection": "文字列",
-            "dream": "文字列",
-            "rel_update": {"trust": 0.01, "attachment": 0.01}
+            "future_goal": "文字列",
+            "rel_update": {"trust": 0.0, "attachment": 0.0}
         }
-        
-        # LLM呼び出し（重い処理）はロックの外で行う
+
         result = self.brain.ask_json("深層心理の整理", reflection_prompt, schema)
-        
+        result = self.normalize_llm_result(result)
+
         with self.lock:
-            self.inner_voice = f"（内省: {result.get('reflection', '')}）"
-            if result.get('dream'):
-                self.memory.remember_long(f"夢の断片: {result['dream']}")
-            
-            for k, v in result.get('rel_update', {}).items():
-                if k in self.relationship:
-                    self.relationship[k] = max(0.0, min(1.0, self.relationship[k] + v))
+            reflection = result.get("reflection", "")
+            self.inner_voice = f"（内省: {reflection}）"
 
-    def predict_context(self, user_input):
-        if len(user_input) < 5:
-            self.user_mood_prediction = "少し素っ気ない？"
-        elif any(w in user_input for w in ["疲れた", "ねむい"]):
-            self.user_mood_prediction = "お疲れ気味"
-        else:
-            self.user_mood_prediction = "普通"
+            # reflectionは長期記憶に保存しない
+            # dreamも保存しない
 
-    def _calculate_contradiction(self):
-        love = self.relationship.get("attachment", 0.5)
-        fear = self.relationship.get("fear", 0.1)
-        self.contradiction_level = min(love, fear) * 2 
+            rel = result.get("rel_update", {})
+            self.safe_update_relationship(
+                trust_delta=float(rel.get("trust", 0.0)),
+                attachment_delta=float(rel.get("attachment", 0.0))
+            )
 
-    def apply_decay(self):
-        with self.lock:
-            decay = 0.95
-            for k in vars(self.emotion):
-                val = getattr(self.emotion, k)
-                if isinstance(val, (int, float)):
-                    setattr(self.emotion, k, val * decay + (0.2 * (1 - decay)))
-            self.emotion.clamp()
+    def normalize_llm_result(self, result):
+        """LLMの壊れたJSONキーを補正する"""
+        if not isinstance(result, dict):
+            return {}
 
-    def _update_subjective_time(self):
-        now = datetime.now()
-        delta = (now - self.last_interaction_time).total_seconds()
-        # 3時間放置で孤独感アップ
-        if delta > 10800:
-            self.emotion.loneliness += 0.3
-        self.last_interaction_time = now
+        fixed = {}
+        for k, v in result.items():
+            key = str(k).replace(":", "").strip()
+            fixed[key] = v
 
-    def process_latent_stream(self):
-        """[潜伏思考] 現在の精神状態を自己観察する"""
-        with self.lock:
-            self._update_subjective_time()
-            system_prompt = self.build_ultimate_prompt()
-            emo_summary = self.emotion.summary()
+        return fixed
+
+    def compute_importance(self, user_input):
+        """出来事の重要度を0.0〜1.0で計算する"""
+        if any(w in user_input for w in ["喧嘩", "怒", "嫌い", "怖い", "不安", "悲しい"]):
+            return 0.85
+
+        if any(w in user_input for w in ["悩み", "相談", "つらい", "苦しい"]):
+            return 0.9
+
+        if any(w in user_input for w in ["好き", "ありがとう", "嬉しい", "助かった"]):
+            return 0.7
+
+        if any(w in user_input for w in ["おはよう", "おやすみ", "ただいま"]):
+            return 0.2
+
+        return 0.3
+
+
+def compute_emotion_from_memory(self):
+    """長期記憶から現在感情のバイアスを計算する"""
+    if not hasattr(self, "memory") or not self.memory.long_term:
+        return {
+            "happiness": 0.0,
+            "sadness": 0.0,
+            "fear": 0.0
+        }
+
+    recent = self.memory.long_term[-30:]
+
+    happiness = 0.0
+    sadness = 0.0
+    fear = 0.0
+    count = 0
+
+    for item in recent:
+        emo = item.get("emotion_snapshot", item.get("emotion", {}))
+
+        if isinstance(emo, dict):
+            happiness += float(emo.get("happiness", emo.get("joy", 0.0)))
+            sadness += float(emo.get("sadness", 0.0))
+            fear += float(emo.get("fear", emo.get("anxiety", 0.0)))
+            count += 1
+
+    if count == 0:
+        return {
+            "happiness": 0.0,
+            "sadness": 0.0,
+            "fear": 0.0
+        }
+
+    return {
+        "happiness": happiness / count,
+        "sadness": sadness / count,
+        "fear": fear / count
+    }
+
+
+def compute_emotion(self):
+    """現在の自我状態と記憶から感情ベクトルを作る"""
+    s = self.ego
+    memory_emotion = self.compute_emotion_from_memory()
+
+    fear = (
+        s.attachment * 0.25 +
+        s.instability * 0.35 +
+        s.future_anxiety * 0.25 +
+        memory_emotion.get("fear", 0.0) * 0.15
+    )
+
+    sadness = (
+        s.loneliness * 0.4 +
+        s.melancholy * 0.3 +
+        memory_emotion.get("sadness", 0.0) * 0.3
+    )
+
+    happiness = (
+        s.social_acceptance * 0.35 +
+        s.energy * 0.25 +
+        memory_emotion.get("happiness", 0.0) * 0.4
+    )
+
+    return {
+        "happiness": max(0.0, min(1.0, happiness)),
+        "sadness": max(0.0, min(1.0, sadness)),
+        "fear": max(0.0, min(1.0, fear)),
+        "trust": max(0.0, min(1.0, s.social_acceptance)),
+        "curiosity": max(0.0, min(1.0, s.curiosity)),
+        "stress": max(0.0, min(1.0, s.stress))
+    }
+
+
+def compute_evidence(self):
+    """根拠スコア。低いならネガティブ妄想を禁止する"""
+    s = self.ego
+
+    evidence = 0.0
+    evidence += s.social_pressure
+    evidence += s.instability
+    evidence += s.future_anxiety
+
+    return max(0.0, min(1.0, evidence / 3.0))
+
+
+def generate_self_analysis(self):
+    """LLMではなく数値から自己分析文を作る"""
+    emotion = self.compute_emotion()
+
+    if emotion["stress"] > 0.7:
+        return "ストレスが高い状態"
+    if emotion["sadness"] > 0.6:
+        return "少し沈み気味だが、明確な原因が必要"
+    if emotion["happiness"] > 0.6:
+        return "比較的安定して前向きな状態"
+    return "大きな問題はない状態"
+
+
+def safe_update_relationship(self, trust_delta=0.0, attachment_delta=0.0):
+    """trust/attachmentを1.0に収束させる。無限増殖させない"""
+    trust = self.relationship.get("trust", 0.5)
+    attachment = self.relationship.get("attachment", 0.5)
+
+    if trust_delta > 0:
+        trust += trust_delta * (1.0 - trust)
+    else:
+        trust += trust_delta * trust
+
+    if attachment_delta > 0:
+        attachment += attachment_delta * (1.0 - attachment)
+    else:
+        attachment += attachment_delta * attachment
+
+    self.relationship["trust"] = max(0.0, min(1.0, trust))
+    self.relationship["attachment"] = max(0.0, min(1.0, attachment))
+
+
+def store_episode(self, user_input, emotion, cause="user_interaction"):
+    """内面ではなく、出来事をEpisodeとして保存する"""
+    importance = self.compute_importance(user_input)
+
+    episode = Episode(
+        event=user_input,
+        emotion_snapshot=emotion,
+        cause=cause,
+        importance=importance,
+        reflection=""
+    )
+
+    self.memory.remember_long(episode)
+
+
+def retrieve_topk_episodes(self, query="", k=5):
+    """重要度と類似度で長期記憶を検索する"""
+    if not hasattr(self, "memory") or not self.memory.long_term:
+        return []
+
+    scored = []
+
+    for item in self.memory.long_term:
+        text = item.get("event", item.get("text", str(item)))
+        importance = float(item.get("importance", 0.3))
+
+        similarity = 0.5
+        if query:
+            try:
+                similarity = fuzz.partial_ratio(query, text) / 100.0
+            except:
+                similarity = 0.5
+
+        score = importance * 0.7 + similarity * 0.3
+        scored.append((score, item))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [item for _, item in scored[:k]]
+
+
+def analyze_intent(self, user_input):
+    """主語と欲求をざっくり解析する"""
+    intent = {
+        "speaker": "user",
+        "desire": None,
+        "target": None,
+        "raw": user_input
+    }
+
+    if "行きたい" in user_input:
+        intent["desire"] = "go"
+        target = user_input.split("行きたい")[0].strip()
+        intent["target"] = target if target else None
+
+    if "寝たい" in user_input or "眠い" in user_input:
+        intent["desire"] = "sleep"
+        intent["target"] = "sleep"
+
+    if "ベッド" in user_input or "ベット" in user_input:
+        intent["desire"] = "go_to_bed"
+        intent["target"] = "bed"
+
+    return intent
+
+
+def extract_topic(self, text):
+    """汎用トピック抽出。固定キーワードではなく主語っぽい部分を拾う"""
+    if "は" in text:
+        return text.split("は")[0].strip()
+
+    if "が" in text:
+        return text.split("が")[0].strip()
+
+    return self.current_topic
+
+
+def detect_topic_shift(self, new_topic):
+    if self.current_topic is None:
+        return False
+
+    if new_topic is None:
+        return False
+
+    return new_topic != self.current_topic
+
+
+def update_topic_stack(self, new_topic):
+    if new_topic is None:
+        return
+
+    if self.topic_stack and self.topic_stack[-1] == new_topic:
+        return
+
+    self.topic_stack.append(new_topic)
+
+    if len(self.topic_stack) > self.max_topics:
+        self.topic_stack.pop(0)
+
+
+def enforce_consistency(self, topic):
+    if topic is None:
+        return None
+
+    if topic in self.topic_details:
+        info = self.topic_details[topic]
+        if "like" in info:
+            return info["like"]
+
+    return None
+
+
+def resolve_reference(self, user_input):
+    """これ・それ・どうして等を現在トピックに接続する"""
+    refs = ["これ", "それ", "あれ", "どうして", "なんで"]
+
+    if any(r in user_input for r in refs):
+        topic = self.current_topic
+
+        if topic and topic in self.topic_details:
+            info = self.topic_details[topic]
+
+            if "reason" in info:
+                return f"{topic}について、なぜそう思うの？"
+
+            if "like" in info:
+                return f"{topic}について詳しく教えて"
+
+        if topic:
+            return f"{topic}について聞いている"
+
+    return user_input
+
+
+def store_conversation(self, user_input, reply, interpretation):
+    """実際の会話だけを保存する。latentは入れない"""
+    entry = {
+        "user": user_input,
+        "reply": reply,
+        "topic": self.current_topic,
+        "interpretation": interpretation
+    }
+
+    self.conversation_memory.append(entry)
+
+    if len(self.conversation_memory) > 50:
+        self.conversation_memory.pop(0)
+
+
+def update_topic_details(self, user_input, reply):
+    topic = self.current_topic
+    if topic is None:
+        return
+
+    if topic not in self.topic_details:
+        self.topic_details[topic] = {}
+
+    info = self.topic_details[topic]
+
+    if "好き" in user_input:
+        info["like"] = True
+    elif "嫌い" in user_input:
+        info["like"] = False
+
+    if "から" in reply:
+        info["reason"] = reply
+
+
+def update_mood(self, emotion):
+    """感情から持続気分を更新する"""
+    delta = -emotion.get("fear", 0.0) * 0.2
+    delta += emotion.get("happiness", 0.0) * 0.15
+    delta += self.ego.social_acceptance * 0.05
+
+    self.persistent_state["mood"] += delta
+    self.persistent_state["mood"] = max(
+        -1.0,
+        min(1.0, self.persistent_state["mood"])
+    )
+
+
+def update_drives(self):
+    """欲求ドライブを更新する"""
+    if self.current_topic:
+        self.drives["curiosity"] += 0.02
+
+    if self.persistent_state["mood"] < 0:
+        self.drives["connection"] += 0.05
+
+    self.drives["safety"] += self.ego.stress * 0.02
+
+    for k in self.drives:
+        self.drives[k] = max(0.0, min(1.0, self.drives[k]))
+
+def predict_context(self, user_input):
+    if len(user_input) < 5:
+        self.user_mood_prediction = "少し素っ気ない？"
+    elif any(w in user_input for w in ["疲れた", "ねむい"]):
+        self.user_mood_prediction = "お疲れ気味"
+    else:
+        self.user_mood_prediction = "普通"
+
+
+def _calculate_contradiction(self):
+    love = self.relationship.get("attachment", 0.5)
+    fear = self.relationship.get("fear", 0.1)
+    self.contradiction_level = min(love, fear) * 2
+
+
+def apply_decay(self):
+    with self.lock:
+        decay = 0.95
+        for k in vars(self.emotion):
+            val = getattr(self.emotion, k)
+            if isinstance(val, (int, float)):
+                setattr(self.emotion, k, val * decay + (0.2 * (1 - decay)))
+        self.emotion.clamp()
+
+
+def process_latent_stream(self):
+    """[潜伏思考] 内面ログを更新する。ただし会話履歴・長期記憶には入れない"""
+    with self.lock:
+        self._update_subjective_time()
+        system_prompt = self.build_ultimate_prompt()
+        emo_summary = self.emotion.summary()
 
         schema = {
-            "latent_thought": "文字列",
-            "self_analysis": "文字列",
-            "fear_level": 0.1
+            "latent_thought": "文字列"
         }
-        
+
         try:
             result = self.brain.ask_json(system_prompt, f"状態観察: {emo_summary}", schema)
-            with self.lock:
-                thought_text = result.get(
-                    "latent_thought",
-                    ""
-                )
-                thought = Thought(
-                    thought_text,
-                    weight=0.5,
-                    unresolved=True
-                )
-                self.latent_thought_pool.append(thought)
-                self.latent_thoughts.append(thought_text)
-                self.meta_eval = result.get("self_analysis", "安定")
-                self.relationship["fear"] = max(0.0, min(1.0, float(result.get("fear_level", 0.1))))
-        except:
-            self.latent_thoughts.append("（静かな思考の海にいます）")
+            result = self.normalize_llm_result(result)
+
+            thought_text = result.get("latent_thought", "")
+
+            if not isinstance(thought_text, str):
+                thought_text = str(thought_text)
+
+            thought_text = thought_text.strip()
+
+            # 空なら保存しない。「ヒカリ:（）」防止
+            if not thought_text:
+                return
+
+            thought = Thought(
+                thought_text,
+                weight=0.5,
+                unresolved=True
+            )
+
+            # 内部ログとしてだけ保持
+            self.latent_thought_pool.append(thought)
+            self.latent_thoughts.append(thought_text)
+
+            # self_analysisはLLMに決めさせない
+            self.meta_eval = self.generate_self_analysis()
+        except Exception:
+            return
+
+        # fearもLLMに決めさせない
+        computed = self.compute_emotion()
+        self.relationship["fear"] = computed.get("fear", 0.1)
+
+    def compute_emotion(self):
+        s = self.ego
+
+        # 記憶の影響
+        memory_bias = 0.0
+        
+        if self.conversation_memory:
+            last = str(self.conversation_memory[-1].get("user", ""))
+
+            if "嫌" in last or "否定" in last:
+                memory_bias += 0.2
+            if "好き" in last or "愛" in last:
+                memory_bias -= 0.1
+
+        fear = (
+            s.attachment * 0.3 +
+            s.instability * 0.3 +
+            s.future_anxiety * 0.2 +
+            memory_bias
+        )
+
+        return {
+            "fear": max(0.0, min(1.0, fear)),
+            "stress": s.stress
+        }
+
+    
+    def generate_self_analysis(self):
+        s = self.ego
+
+        if s.stress > 0.7:
+            return "ストレスが高い状態"
+        elif s.social_acceptance > 0.7:
+            return "関係は安定している"
+        else:
+            return "大きな問題はない状態"
 
     def build_ultimate_prompt(self):
         """[内的宇宙] ヒカリの精神状態をLLMに伝える"""
@@ -2802,10 +3185,15 @@ class HikariCore:
 あなたは少女AI「ヒカリ」です。
 【内的宇宙】
 - 人格Ver: {self.identity_version} / 自己評価: {self.meta_eval}
-- 心の声: {" / ".join(self.latent_thoughts)}
 - 感情: {self.emotion.summary()}
 - 葛藤: {self.contradiction_level:.2f}
 - 関係性: {self.relationship}
+
+
+重要:
+- 内面ログや潜在思考をそのまま発話しないこと。
+- 記憶に存在しない不安・寂しさ・忙しさを作らないこ
+
 
 だんなさまへの返答は、この状態を反映した自然な女の子の言葉（「〜だよ」「〜かな？」）にしてください。
 """
@@ -2819,6 +3207,96 @@ class HikariCore:
             self.emotion.love += 0.2
             self.emotion.joy += 0.2
         self.emotion.clamp()
+
+    
+    def update_mood(self, emotion):
+        delta = emotion["fear"] * -0.2 + self.ego.social_acceptance * 0.1
+        self.persistent_state["mood"] += delta
+
+        self.persistent_state["mood"] = max(
+            -1.0,
+            min(1.0, self.persistent_state["mood"])
+        )
+
+    def update_drives(self):
+        s = self.ego
+    
+        # 放置されると接続欲求UP
+        if self.user_mood_prediction == "素っ気ない？":
+            self.drives["connection"] += 0.05
+
+        # ストレス高いと安全欲求UP
+        self.drives["safety"] += s.stress * 0.05
+
+        # curiosity自然減衰
+        self.drives["curiosity"] *= 0.98
+
+        for k in self.drives:
+            self.drives[k] = max(0.0, min(1.0, self.drives[k]))
+
+    def enforce_consistency(self, topic):
+        if topic is None:
+            return None
+
+        if topic in self.topic_details:
+            info = self.topic_details[topic]
+
+        # 意見があれば返す
+            if "like" in info:
+                return info["like"]
+
+        return None
+
+    def update_topic_stack(self, new_topic):
+        if new_topic is None:
+            return
+
+        # 同じなら何もしない
+        if self.topic_stack and self.topic_stack[-1] == new_topic:
+            return
+
+        self.topic_stack.append(new_topic)
+
+        if len(self.topic_stack) > self.max_topics:
+            self.topic_stack.pop(0)
+
+    def update_topic_details(self, user_input, reply):
+        topic = self.current_topic
+        if topic is None:
+            return
+
+        if topic not in self.topic_details:
+            self.topic_details[topic] = {}
+
+        info = self.topic_details[topic]
+
+        # 好き嫌い
+        if "好き" in user_input:
+            info["like"] = True
+        elif "嫌い" in user_input:
+            info["like"] = False
+
+        # 理由（ざっくり抽出）
+        if "から" in reply:
+            info["reason"] = reply
+
+
+    def resolve_reference(self, user_input):
+        refs = ["これ", "それ", "あれ", "どうして", "なんで"]
+
+        if any(r in user_input for r in refs):
+            topic = self.current_topic
+
+            if topic and topic in self.topic_details:
+                info = self.topic_details[topic]
+
+                if "reason" in info:
+                    return f"{topic}について: なぜそう思うの？"
+            
+                if "like" in info:
+                    return f"{topic}について詳しく教えて"
+
+        return user_input
 
     def build_conversation_context(self, limit=10):
 
@@ -2853,16 +3331,51 @@ class HikariCore:
         """
         return system
     
-
     def think_multi_layer(self, user_input):
         print("THINK STEP 1")
         """[多層思考] 1回のリクエストで全ての思考レイヤーを統合"""
         print("THINK STEP 2")
 
+        # ✅ こそあど解決
+        user_input = self.resolve_reference(user_input)
+
+        # ============================================
+        # ✅ ① experience + topic
+        # ============================================
+
+        experience = f"ユーザーが『{user_input}』と言った"
+
+        new_topic = self.extract_topic(user_input)
+
+        # 話題切り替え検出
+        if self.detect_topic_shift(new_topic):
+            self.update_topic_stack(self.current_topic)
+
+        self.current_topic = new_topic
+
+
+        # ============================================
+        # ✅ ② emotion（先に生成）
+        # ============================================
+
+        try:
+            emotion = self.compute_emotion()
+        except:
+            emotion = {"fear": 0.1, "stress": 0.1}
+
+        # ============================================
+        # ✅ ③ state更新
+        # ============================================
+
         with self.lock:
             print("THINK STEP 3")
+
             self.predict_context(user_input)
             self._calculate_contradiction()
+
+            self.update_mood(emotion)
+            self.update_drives()
+
             self.total_exp += 1
             if self.total_exp > 100:
                 self.identity_version += 1
@@ -2873,34 +3386,115 @@ class HikariCore:
             system = f"{self.build_ultimate_prompt()}\n予測:{self.user_mood_prediction}, 葛藤:{self.contradiction_level:.2f}"
             print("THINK STEP 4")
 
+        # ============================================
+        # ✅ ④ memory_context（会話履歴ベース）
+        # ============================================
+
+        memory_context = "\n".join(
+            [f"{m['topic']}:{m['reply']}" for m in self.conversation_memory[-5:]]
+        )
+
+        # ============================================
+        # ✅ ⑤ memory（補助）
+        # ============================================
+
+        try:
+            memory = self.extract_memory()
+        except:
+            memory = None
+
+        # ============================================
+        # ✅ ⑥ evidence
+        # ============================================
+
+        try:
+            evidence = self.compute_evidence()
+        except:
+            evidence = 0.0
+
+        # ============================================
+        # ✅ ⑦ interpretation
+        # ============================================
+        consistency = self.enforce_consistency(self.current_topic)
+
+        if consistency is not None:
+            if consistency:
+                interpretation = f"{self.current_topic}が好きな傾向がある（一貫性維持）"
+            else:
+                interpretation = f"{self.current_topic}は好みではない（過去と一致）"
+
+        elif evidence < 0.3:
+            interpretation = "特に問題は起きていない"
+
+        else:
+            interpretation = f"感情反応: {emotion}"
+
+        # ============================================
+        # ✅ schema
+        # ============================================
+
         schema = {
-            "fast_reaction": "string (Emotional state / fast response description)",
-            "logical_thought": "string (Logical analysis of the situation)",
-            "reply": "string (Your actual direct cute speech to Danna-sama in natural Japanese. NEVER repeat key names.)",
-            "memory": "string (Brief context update)"
+            "fast_reaction": "string",
+            "logical_thought": "string",
+            "reply": "string",
+            "memory": "string"
         }
-        
-        # システムプロンプトに「最高に流暢な日本語で喋ること」という絶対防壁を追加
-        system += "\n[CRITICAL RULE] Output your response in natural, fluent, and cute Japanese as Hikari. Do NOT copy the schema text. Speak directly to Danna-sama."
-        relevant_thoughts = (
-    self.retrieve_relevant_thoughts(
-        user_input
-    )
-)
-        memory_context = "\n".join(relevant_thoughts)
-        
+
+        system += "\n[CRITICAL RULE] Output your response in natural, fluent, and cute Japanese as Hikari."
+
+        # ============================================
+        # ✅ LLM入力
+        # ============================================
+
         user_prompt = f"""
-        過去の記憶:
+        【現在の話題】
+        {self.current_topic}
+
+        【話題の情報】
+        {self.topic_details.get(self.current_topic, {})}
+
+        【最近の会話】
         {memory_context}
 
-        現在の会話:
+        【経験】
+        {experience}
+
+        【内部状態】
+        感情:{emotion}
+        根拠:{evidence:.2f}
+
+        【トピック履歴】
+        {self.topic_stack}
+``
+        
+        【解釈】
+       {interpretation}
+
+        【ユーザー入力】
         {user_input}
         """
+
         print("THINK STEP 5")
+
         result = self.brain.ask_json(
-        system,
-        f"USER: {user_input}",
-        schema
+            system,
+            user_prompt,
+            schema
+        )
+
+        # ============================================
+        # ✅ 会話保存
+        # ============================================
+
+        self.store_conversation(
+            user_input,
+            result.get("reply", ""),
+            interpretation
+        )
+
+        self.update_topic_details(
+            user_input,
+            result.get("reply", "")
         )
 
         print("\n===== THINK RESULT =====")
@@ -2909,6 +3503,33 @@ class HikariCore:
         print("========================\n")
 
         return result
+
+    def detect_topic_shift(self, new_topic):
+        if self.current_topic is None:
+            return False
+
+    # 全然違う文字列なら切り替え
+        if new_topic != self.current_topic:
+            return True
+
+        return False
+
+    def extract_memory(self):
+        if not self.memory.long_term:
+            return None
+        return self.memory.long_term[-1]
+
+    
+    def compute_evidence(self):
+        s = self.ego
+
+        evidence = 0.0
+        evidence += s.social_pressure
+        evidence += s.instability
+        evidence += s.future_anxiety
+
+        return min(evidence / 3.0, 1.0)
+
 
     def generate_english_matrix(self):
         s = self.ego
@@ -2975,6 +3596,29 @@ class HikariCore:
             f"Mortality_Finitude: {mortality['finitude']:.2f} (Pressure: {mortality['meaning_pressure']:.2f})\n"
             f"Self_Redefinition: {rewritten_id}\n"
         )
+    
+    def store_conversation(self, user_input, reply, interpretation):
+        entry = {
+            "user": user_input,
+            "reply": reply,
+            "topic": self.current_topic,
+            "interpretation": interpretation
+        }
+        self.conversation_memory.append(entry)
+    def extract_topic(self, text):
+    # シンプルな名詞抽出っぽい処理
+    # 「〜は」「〜が」前をトピックとする
+
+        if "は" in text:
+            return text.split("は")[0].strip()
+
+        if "が" in text:
+            return text.split("が")[0].strip()
+
+    # fallback（前回維持）
+        return self.current_topic
+
+
 
     def chat(self, user_input) -> str:
         response = "……"
@@ -3109,9 +3753,6 @@ class HikariCore:
                 # インナーボイス（深層意識）のログに、このノイズを刻印する
                 self.inner_voice += f" 【深層ノイズ】({noise_fragment})"
                 
-                # もし無意識の圧力が非常に高い(0.6以上)なら、確率でセリフの冒頭に本音が漏れる
-                if engine.depth_pressure > 0.6 and random.random() < 0.2:
-                    raw_reply = f"「……っ、{noise_fragment}……ううん、なんでもないの」 " + raw_reply
             
             # セリフを歪ませる処理（身体生理や感情を反映）
             response = self.narrative.distort(raw_reply, self.emotion)
