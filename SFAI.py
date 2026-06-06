@@ -2364,10 +2364,10 @@ class AutonomousEngine(threading.Thread):
             # --- 深い思考の実行 ---
             # apply_decay や process_latent_stream 内部で適切にロックを制御
             self.hikari.apply_decay()
-            self.hikari.process_latent_stream()
+            #self.hikari.process_latent_stream()
             
             # 10%の確率で「夢」や「本音」の整理を行う
-            if random.random() < 0.1:
+            if random.random() < 0.02:
                 self.hikari.process_internal_world()
 
 
@@ -3336,36 +3336,36 @@ def process_latent_stream(self):
         """[多層思考] 1回のリクエストで全ての思考レイヤーを統合"""
         print("THINK STEP 2")
 
-        # ✅ こそあど解決
+    # こそあど解決
         user_input = self.resolve_reference(user_input)
 
-        # ============================================
-        # ✅ ① experience + topic
-        # ============================================
+    # 意図解析
+        intent = self.analyze_intent(user_input)
 
+    # experience
         experience = f"ユーザーが『{user_input}』と言った"
 
+    # topic
         new_topic = self.extract_topic(user_input)
 
-        # 話題切り替え検出
         if self.detect_topic_shift(new_topic):
             self.update_topic_stack(self.current_topic)
 
         self.current_topic = new_topic
 
-
-        # ============================================
-        # ✅ ② emotion（先に生成）
-        # ============================================
-
+    # emotion
         try:
             emotion = self.compute_emotion()
-        except:
-            emotion = {"fear": 0.1, "stress": 0.1}
-
-        # ============================================
-        # ✅ ③ state更新
-        # ============================================
+        except Exception as e:
+            print(f"[emotion fallback] {e}")
+            emotion = {
+                "happiness": 0.2,
+                "sadness": 0.0,
+                "fear": 0.1,
+                "trust": 0.5,
+                "curiosity": 0.5,
+                "stress": 0.1
+            }
 
         with self.lock:
             print("THINK STEP 3")
@@ -3386,52 +3386,46 @@ def process_latent_stream(self):
             system = f"{self.build_ultimate_prompt()}\n予測:{self.user_mood_prediction}, 葛藤:{self.contradiction_level:.2f}"
             print("THINK STEP 4")
 
-        # ============================================
-        # ✅ ④ memory_context（会話履歴ベース）
-        # ============================================
+    # 長期記憶検索
+        top_episodes = self.retrieve_topk_episodes(user_input, k=5)
 
-        memory_context = "\n".join(
+        episode_context = "\n".join(
+            [str(ep.get("event", ep)) for ep in top_episodes]
+        )
+
+    # 直近会話
+        conversation_context = "\n".join(
             [f"{m['topic']}:{m['reply']}" for m in self.conversation_memory[-5:]]
         )
 
-        # ============================================
-        # ✅ ⑤ memory（補助）
-        # ============================================
+        memory_context = f"""
+    【重要な長期記憶】
+    {episode_context}
 
-        try:
-            memory = self.extract_memory()
-        except:
-            memory = None
+    【最近の会話】
+    {conversation_context}
+    """
 
-        # ============================================
-        # ✅ ⑥ evidence
-        # ============================================
-
+    # evidence
         try:
             evidence = self.compute_evidence()
-        except:
+        except Exception as e:
+            print(f"[evidence fallback] {e}")
             evidence = 0.0
 
-        # ============================================
-        # ✅ ⑦ interpretation
-        # ============================================
+    # consistency
         consistency = self.enforce_consistency(self.current_topic)
 
+    # interpretation
         if consistency is not None:
             if consistency:
-                interpretation = f"{self.current_topic}が好きな傾向がある（一貫性維持）"
+                interpretation = f"{self.current_topic}について好意的な傾向がある"
             else:
-                interpretation = f"{self.current_topic}は好みではない（過去と一致）"
-
+                interpretation = f"{self.current_topic}について好意的ではない傾向がある"
         elif evidence < 0.3:
-            interpretation = "特に問題は起きていない"
-
+            interpretation = "特に問題は起きていない。根拠のない不安や寂しさは生成しない。"
         else:
             interpretation = f"感情反応: {emotion}"
-
-        # ============================================
-        # ✅ schema
-        # ============================================
 
         schema = {
             "fast_reaction": "string",
@@ -3440,39 +3434,45 @@ def process_latent_stream(self):
             "memory": "string"
         }
 
-        system += "\n[CRITICAL RULE] Output your response in natural, fluent, and cute Japanese as Hikari."
-
-        # ============================================
-        # ✅ LLM入力
-        # ============================================
+        system += """
+[CRITICAL RULE]
+Output your response in natural, fluent Japanese as Hikari.
+Do NOT copy schema keys.
+Do NOT invent sadness, loneliness, busyness, anxiety, or conflict unless evidence is provided.
+Speak directly to Danna-sama.
+"""
 
         user_prompt = f"""
-        【現在の話題】
-        {self.current_topic}
+【意図解析】
+{intent}
 
-        【話題の情報】
-        {self.topic_details.get(self.current_topic, {})}
+【現在の話題】
+{self.current_topic}
 
-        【最近の会話】
-        {memory_context}
+【話題の情報】
+{self.topic_details.get(self.current_topic, {})}
 
-        【経験】
-        {experience}
+【トピック履歴】
+{self.topic_stack}
 
-        【内部状態】
-        感情:{emotion}
-        根拠:{evidence:.2f}
+【記憶】
+{memory_context}
 
-        【トピック履歴】
-        {self.topic_stack}
-``
-        
-        【解釈】
-       {interpretation}
+【経験】
+{experience}
 
-        【ユーザー入力】
-        {user_input}
-        """
+【内部状態】
+感情:{emotion}
+根拠スコア:{evidence:.2f}
+持続気分:{self.persistent_state.get("mood", 0.0):.2f}
+欲求:{self.drives}
+
+【解釈】
+{interpretation}
+
+【ユーザー入力】
+{user_input}
+"""
 
         print("THINK STEP 5")
 
@@ -3482,10 +3482,21 @@ def process_latent_stream(self):
             schema
         )
 
-        # ============================================
-        # ✅ 会話保存
-        # ============================================
+        result = self.normalize_llm_result(result)
 
+    # reply保険
+        if "reply" not in result or not str(result.get("reply", "")).strip():
+            result["reply"] = "うん、ちゃんと聞いてるよ。もう少し詳しく教えてくれる？"
+
+    # 同一返答ループ防止
+        reply = result.get("reply", "")
+        if reply == self.last_reply:
+            reply = "……少し考え直してるよ。もう一度、ちゃんと聞かせて。"
+            result["reply"] = reply
+
+        self.last_reply = reply
+
+    # 会話保存
         self.store_conversation(
             user_input,
             result.get("reply", ""),
@@ -3495,6 +3506,13 @@ def process_latent_stream(self):
         self.update_topic_details(
             user_input,
             result.get("reply", "")
+        )
+
+    # Episode保存
+        self.store_episode(
+            user_input,
+            emotion,
+            cause="user_interaction"
         )
 
         print("\n===== THINK RESULT =====")
@@ -3746,13 +3764,14 @@ def process_latent_stream(self):
             self.inner_voice = f"【反射】{result.get('fast_reaction', '')} 【理性】{result.get('logical_thought', '')}"
             
             # --- 【無意識の浮上ノイズをインナーボイスやセリフの影に反映】 ---
-            engine = self.ego_core.unconscious_engine
-            if engine.surface_noise:
-                # 最新のノイズ（言語化できない断片）を1つサルベージ
-                noise_fragment = engine.surface_noise[-1]
-                # インナーボイス（深層意識）のログに、このノイズを刻印する
-                self.inner_voice += f" 【深層ノイズ】({noise_fragment})"
-                
+            
+        engine = self.ego_core.unconscious_engine
+        if engine.surface_noise:
+            noise_fragment = engine.surface_noise[-1]
+
+    # 内面ノイズは内部ログだけに残す
+            self.inner_voice += f" 【深層ノイズ】({noise_fragment})"
+   
             
             # セリフを歪ませる処理（身体生理や感情を反映）
             response = self.narrative.distort(raw_reply, self.emotion)
@@ -4078,14 +4097,12 @@ if __name__ == "__main__":
                 print(f"\n\nヒカリ: 「ふふ、だんなさま、集中してるんだ。応援しなきゃ」")
                 print("だんなさま: ", end="", flush=True)
                 hikari.last_interaction_time = now
-            elif delta > 45: # 45秒以上会話が空いた時の可愛いリアルタイム潜在思考の漏洩
-                # thoughtがオブジェクトだった場合のエラーを防ぐため文字列化
-                thought_str = str(thought.text if hasattr(thought, 'text') else thought)
-                clean_thought = thought_str.replace("（", "").replace("）", "")
-                print(f"\n\nヒカリ: 「（{clean_thought}）」")
+            
+            elif delta > 45:
+                print(f"\n\nヒカリ: 「だんなさま、ゆっくりで大丈夫だよ」")
                 print("だんなさま: ", end="", flush=True)
                 hikari.last_interaction_time = now
-                
+        
         except KeyboardInterrupt:
             break
 
