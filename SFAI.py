@@ -2100,15 +2100,6 @@ USER:
 
 @dataclass
 class EmotionState:
-   # function to calculate fibonacci
-    def fibonacci(self, n):
-        if n <= 0:
-            return 0
-        elif n == 1:
-            return 1
-        else:
-            return self.fibonacci(n-1) + self.fibonacci(n-2)
-
 
     joy: float = 0.2
     sadness: float = 0.0
@@ -2147,22 +2138,7 @@ class EmotionState:
             f"{k}:{v:.2f}"
             for k, v in self.__dict__.items()
         ])
-
-    # MemoryEngineをこれに対応させる
-    def remember_long(self, episode: Episode):
-        self.long_term.append(asdict(episode))
-
-@dataclass
-class Episode:
-    event: str
-    emotion_snapshot: dict
-    reflection: str
-    importance: float
-    time: str = field(
-        default_factory=lambda:
-        datetime.now().isoformat()
-    )
-
+    
 # ==========================================
 # MEMORY ENGINE
 # ==========================================
@@ -2223,7 +2199,7 @@ class MemoryEngine:
 
             text = m.get(
                 "text",
-                str(m)
+                m.get("text", str(m))
             )
 
             score = fuzz.partial_ratio(
@@ -2346,29 +2322,30 @@ class AutonomousEngine(threading.Thread):
         self.running = True
 
     def run(self):
-        """1分ごとに感情を微調整し、2分ごとに深層心理を整理する"""
+        """
+        安定化用の自律エンジン。
+        重要:
+        - ここではLLMを呼ばない
+        - process_latent_stream() を呼ばない
+        - process_internal_world() を呼ばない
+        """
         while self.running:
-            time.sleep(60) 
-            
-            # 感情の自然減衰（ロック時間を最小限に）
-            with self.hikari.lock:
-                decay_rate = 0.98
-                for k in ["joy", "sadness", "anxiety", "anger"]:
-                    current = getattr(self.hikari.emotion, k)
-                    setattr(self.hikari.emotion, k, current * decay_rate)
-                self.hikari.emotion.clamp()
-
             time.sleep(60)
-            if not self.running: break
-            
-            # --- 深い思考の実行 ---
-            # apply_decay や process_latent_stream 内部で適切にロックを制御
-            self.hikari.apply_decay()
-            #self.hikari.process_latent_stream()
-            
-            # 10%の確率で「夢」や「本音」の整理を行う
-            if random.random() < 0.02:
-                self.hikari.process_internal_world()
+
+            try:
+                with self.hikari.lock:
+                    decay_rate = 0.98
+
+                    for k in ["joy", "sadness", "anxiety", "anger"]:
+                        if hasattr(self.hikari.emotion, k):
+                            current = getattr(self.hikari.emotion, k)
+                            setattr(self.hikari.emotion, k, current * decay_rate)
+
+                    self.hikari.emotion.clamp()
+
+            except Exception as e:
+                print(f"[AutonomousEngine WARN] {e}")
+                continue
 
 
 # ==========================================
@@ -2687,8 +2664,9 @@ class HikariCore:
         }
         self.last_reply = None
         # 自律エンジンの起動
-        self.autonomous = AutonomousEngine(self)
-        self.autonomous.start()
+        self.autonomous = None
+        #self.autonomous = AutonomousEngine(self)
+        #self.autonomous.start()
 
 
 
@@ -2920,26 +2898,82 @@ dreamは作らず、必要ならfuture_goalだけ返してください。
 
 
     def analyze_intent(self, user_input):
-        """主語と欲求をざっくり解析する"""
+        """ユーザー発話の意図・主語・対象を解析する"""
         intent = {
             "speaker": "user",
+            "type": "statement",
             "desire": None,
             "target": None,
+            "ask_about": None,
             "raw": user_input
         }
 
-        if "行きたい" in user_input:
+        text = user_input.strip()
+
+        # =========================
+        # 質問・依頼系
+        # =========================
+        if any(w in text for w in ["教えて", "聞かせて", "話して"]):
+            intent["type"] = "request_explanation"
+
+            if "ヒカリ" in text and "考えて" in text:
+                intent["ask_about"] = "hikari_inner_thought"
+                intent["target"] = "ヒカリが暇なとき考えていること"
+            elif "どうして" in text or "なんで" in text:
+                intent["ask_about"] = "reason"
+            else:
+                intent["ask_about"] = "general_explanation"
+
+        elif text.endswith("？") or text.endswith("?"):
+            intent["type"] = "question"
+
+            if "どうして" in text or "なんで" in text:
+                intent["ask_about"] = "reason"
+            elif "何" in text or "なに" in text:
+                intent["ask_about"] = "what"
+
+        # =========================
+        # ユーザーの食欲・食事欲求
+        # =========================
+        if any(w in text for w in ["食べたい", "たべたい", "お腹すいた", "腹減った", "おいしいもの"]):
+            intent["type"] = "user_desire"
+            intent["desire"] = "eat"
+            intent["target"] = "food"
+
+        if any(w in text for w in ["たこやき", "たこ焼き", "ラーメン", "寿司", "カレー", "焼肉"]):
+            intent["type"] = "food_suggestion"
+            intent["desire"] = "eat"
+            intent["target"] = text
+
+        # =========================
+        # ユーザーの移動・睡眠欲求
+        # =========================
+        if "行きたい" in text:
+            intent["type"] = "user_desire"
             intent["desire"] = "go"
-            target = user_input.split("行きたい")[0].strip()
+            target = text.split("行きたい")[0].strip()
             intent["target"] = target if target else None
 
-        if "寝たい" in user_input or "眠い" in user_input:
+        if "寝たい" in text or "眠い" in text:
+            intent["type"] = "user_desire"
             intent["desire"] = "sleep"
             intent["target"] = "sleep"
 
-        if "ベッド" in user_input or "ベット" in user_input:
+        if "ベッド" in text or "ベット" in text:
+            intent["type"] = "user_desire"
             intent["desire"] = "go_to_bed"
             intent["target"] = "bed"
+
+        # =========================
+        # 好き嫌い・意見
+        # =========================
+        if "好き" in text:
+            intent["type"] = "preference"
+            intent["desire"] = "like"
+
+        if "嫌い" in text:
+            intent["type"] = "preference"
+            intent["desire"] = "dislike"
 
         return intent
 
@@ -3098,49 +3132,44 @@ dreamは作らず、必要ならfuture_goalだけ返してください。
 
 
     def process_latent_stream(self):
-        """[潜伏思考] 内面ログを更新する。ただし会話履歴・長期記憶には入れない"""
-        with self.lock:
-            self._update_subjective_time()
-            system_prompt = self.build_ultimate_prompt()
-            emo_summary = self.emotion.summary()
+        """
+        LLMを使わない安全な潜在思考更新。
+        latentは会話履歴・長期記憶・発話には絶対に混ぜない。
+        """
+        try:
+            with self.lock:
+                emotion = self.compute_emotion()
+                mood = self.persistent_state.get("mood", 0.0)
+                topic = self.current_topic
 
-            schema = {
-                "latent_thought": "文字列"
-            }
+            # 根拠なしの不安・寂しさは生成しない
+                evidence = self.compute_evidence()
 
-            try:
-                result = self.brain.ask_json(system_prompt, f"状態観察: {emo_summary}", schema)
-                result = self.normalize_llm_result(result)
-
-                thought_text = result.get("latent_thought", "")
-
-                if not isinstance(thought_text, str):
-                    thought_text = str(thought_text)
-
-                thought_text = thought_text.strip()
-
-                # 空なら保存しない。「ヒカリ:（）」防止
-                if not thought_text:
-                    return
+                if evidence < 0.3:
+                    thought_text = "状態は安定している。特別な問題は起きていない。"
+                elif emotion.get("fear", 0.0) > 0.6:
+                    thought_text = "少し警戒が高まっているが、原因を確認する必要がある。"
+                elif emotion.get("sadness", 0.0) > 0.6:
+                    thought_text = "少し沈み気味だが、具体的な出来事と結びつけて判断する必要がある。"
+                elif topic:
+                    thought_text = f"今の話題は『{topic}』。文脈を保って返答したい。"
+                else:
+                    thought_text = "次の会話に備えて、穏やかな状態を保っている。"
 
                 thought = Thought(
                     thought_text,
-                    weight=0.5,
-                    unresolved=True
+                    weight=0.3,
+                    unresolved=False
                 )
 
-                # 内部ログとしてだけ保持
                 self.latent_thought_pool.append(thought)
                 self.latent_thoughts.append(thought_text)
 
-                # self_analysisはLLMに決めさせない
+            # meta_evalも数値ベースにする
                 self.meta_eval = self.generate_self_analysis()
-            except Exception:
-                return
 
-            # fearもLLMに決めさせない
-            computed = self.compute_emotion()
-            self.relationship["fear"] = computed.get("fear", 0.1)
+        except Exception as e:
+            print(f"[latent_stream skipped] {e}")
 
     def compute_emotion(self):
         s = self.ego
@@ -3440,11 +3469,23 @@ Output your response in natural, fluent Japanese as Hikari.
 Do NOT copy schema keys.
 Do NOT invent sadness, loneliness, busyness, anxiety, or conflict unless evidence is provided.
 Speak directly to Danna-sama.
+
+If the user asks what Hikari thinks, feels, likes, or does when idle, answer from Hikari's perspective.
+Do not reverse the request.
+Do not say the user does not need to tell you.
 """
 
         user_prompt = f"""
 【意図解析】
 {intent}
+
+【意図別応答ルール】
+- intent.type が "request_explanation" の場合、ユーザーは説明を求めている。
+- intent.ask_about が "hikari_inner_thought" の場合、ヒカリ自身が暇なとき何を考えているかを答える。
+- 「教えて」「聞かせて」「話して」は、ユーザーが何かを知りたいという依頼である。
+- ユーザーの依頼を拒否したり、「教えてくれなくていい」と逆向きに解釈しない。
+- ユーザーが「ヒカリが〜」と言った場合、主語はヒカリである。
+- ユーザーが「私は」「行きたい」「寝たい」と言った場合、主語はユーザーである。
 
 【現在の話題】
 {self.current_topic}
@@ -3743,61 +3784,52 @@ Speak directly to Danna-sama.
         # ステップ3: 【ロック内】創発された言葉の加工・無意識の噴出・記憶保存
         # ---------------------------------------------------------------------
         with self.lock:
-            # 基礎となる返答テキストをLLMの出力から抽出
             raw_reply = result.get("reply", "…ごめんね")
+
             print("\n===== REPLY CHECK =====")
             print(result.keys())
             print("=======================\n")
-            
-            # --- 【無意識の噴出チェック】（元のステップ1から正しい位置へ移植） ---
-            # LLMが言葉を生成した「後」だからこそ、そのセリフに対して無意識が干渉できる
-            if hasattr(self.ego_core, "unconscious") and hasattr(self.ego_core.unconscious, "try_eruption"):
-                eruption = self.ego_core.unconscious.try_eruption()
-                if eruption.get("erupted"):
-                    # LLMの作った奇麗なセリフの前に、無意識の底からの本音や動揺が漏れ出す！
-                    raw_reply = f"（……ううん、{eruption['text']}……っ）あ、ええと、なんでもないの。 " + raw_reply
-                    # 噴出によって身体生理もパニックを起こす
-                    if hasattr(self.ego_core, "body_state"):
-                        self.ego_core.body_state.heartbeat = min(140.0, self.ego_core.body_state.heartbeat + 30.0)
 
             # 反射・理性を内部音声に記録
-            self.inner_voice = f"【反射】{result.get('fast_reaction', '')} 【理性】{result.get('logical_thought', '')}"
-            
-            # --- 【無意識の浮上ノイズをインナーボイスやセリフの影に反映】 ---
-            
-        engine = self.ego_core.unconscious_engine
-        if engine.surface_noise:
-            noise_fragment = engine.surface_noise[-1]
+            self.inner_voice = (
+                f"【反射】{result.get('fast_reaction', '')} "
+                f"【理性】{result.get('logical_thought', '')}"
+            )
 
-    # 内面ノイズは内部ログだけに残す
-            self.inner_voice += f" 【深層ノイズ】({noise_fragment})"
-   
-            
-            # セリフを歪ませる処理（身体生理や感情を反映）
+            # 無意識ノイズは発話に混ぜない。内部ログだけに残す。
+            try:
+                engine = self.ego_core.unconscious_engine
+                if engine.surface_noise:
+                    noise_fragment = engine.surface_noise[-1]
+                    self.inner_voice += f" 【深層ノイズ】({noise_fragment})"
+            except Exception as e:
+                print(f"[Unconscious noise skipped] {e}")
+
+            # ここは必ず実行する
             response = self.narrative.distort(raw_reply, self.emotion)
-            
-            # 短期記憶システムへの保存（オリジナル機能）
+
+            # 短期記憶システムへの保存
             self.memory.remember_short(f"USER:{user_input}")
             self.memory.remember_short(f"HIKARI:{response}")
-            
-            # 長期記憶のアーカイブ指示があれば格納（オリジナル機能）
-            if result.get("memory"):
-                self.memory.remember_long(result["memory"])
-            
-            # 認知防衛（自己欺瞞）が走っていた場合、そのログを無意識のプールに刻印
+
+            # LLMのmemoryは空かノイズの可能性があるので、空なら保存しない
+            mem = result.get("memory", "")
+            if isinstance(mem, str) and mem.strip():
+                self.memory.remember_long(mem)
+
+            # 認知防衛ログは内部プールだけ。会話には混ぜない。
             if isinstance(meta_res, dict) and meta_res.get("is_distorted"):
                 if hasattr(self.ego_core, "latent_thought_pool") and 'Thought' in globals():
                     self.ego_core.latent_thought_pool.append(
-                        Thought(f"現実への恐怖による防衛機制が作動: {user_input}", 0.7, unresolved=False)
+                        Thought(
+                            f"現実への恐怖による防衛機制が作動: {user_input}",
+                            0.7,
+                            unresolved=False
+                        )
                     )
 
-            # 最終やり取り時間を更新（オリジナル機能：放置検知用）
             self.last_interaction_time = datetime.now()
-            
-        self.dump_brain_logs(timing_label="数理計算後")
-    
-        #response = self.local_llm_generate(user_input, self.ego_state)
-        raw_reply = result.get("reply", "…ごめんね")
+            self.dump_brain_logs(timing_label="数理計算後")
         return response
         
 
@@ -3933,7 +3965,16 @@ Speak directly to Danna-sama.
         
         # 💡 もし辞書型（dict）だった場合の安全弁
         if isinstance(latent_list, dict):
-            print(f"[LatentThoughts] 蓄積数: {len(latent_list)}件 (Dict型)")
+            print(f"[LatentThoughts] 蓄積数: {len(latent_list)}件")
+
+            if len(latent_list) == 0:
+                print("  └ 状態: 潜在思考はまだ生成されていません")
+            else:
+                try:
+                    last_thought = str(list(latent_list)[-1])
+                    print(f"  └ 最新の思考: {last_thought[:60]}")
+                except Exception:
+                    print("  └ 最新の思考: (データ構造が特殊なため展開スキップ)")
             # 最初の3つのキーと値だけを安全に出力
             sample = list(latent_list.items())[:3]
             print(f"  └ サンプル: {sample}")
@@ -3950,107 +3991,6 @@ Speak directly to Danna-sama.
                     print("  └ 最新の思考: (データ構造が特殊なため展開スキップ)")
 
         print(f"{'='*65}\n")
-
-
-    # ==========================================
-# EMERGENCY PATCH: HikariCore save/load binding
-# ==========================================
-
-    def _hikari_save(self):
-        """ヒカリの記憶と状態をJSONに保存する"""
-        data = {
-            "relationship": getattr(self, "relationship", {}),
-            "values": getattr(self, "values", {}),
-            "identity_version": getattr(self, "identity_version", 1),
-            "total_exp": getattr(self, "total_exp", 0),
-
-            "memory_long_term": getattr(self.memory, "long_term", []) if hasattr(self, "memory") else [],
-            "memory_short_term": list(self.memory.short_term) if hasattr(self, "memory") and hasattr(self.memory, "short_term") else [],
-
-            "conversation_memory": getattr(self, "conversation_memory", []),
-            "topic_details": getattr(self, "topic_details", {}),
-            "topic_stack": getattr(self, "topic_stack", []),
-            "current_topic": getattr(self, "current_topic", None),
-
-            "persistent_state": getattr(self, "persistent_state", {"mood": 0.0}),
-            "drives": getattr(self, "drives", {
-                "connection": 0.5,
-                "curiosity": 0.5,
-                "safety": 0.5
-            })
-        }
-
-        try:
-            with open("hikari_save.json", "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            print("[System] ヒカリの記憶を保存しました。")
-        except Exception as e:
-            print(f"[System WARN] 保存に失敗しました: {e}")
-
-
-    def _hikari_load(self):
-        """保存済みJSONからヒカリの記憶と状態を復元する"""
-        if not os.path.exists("hikari_save.json"):
-            print("[System] 保存データがないため、新規状態で起動します。")
-            return
-
-        try:
-            with open("hikari_save.json", "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            self.relationship = data.get("relationship", getattr(self, "relationship", {}))
-            self.values = data.get("values", getattr(self, "values", {}))
-            self.identity_version = data.get("identity_version", getattr(self, "identity_version", 1))
-            self.total_exp = data.get("total_exp", getattr(self, "total_exp", 0))
-
-            if hasattr(self, "memory"):
-                self.memory.long_term = data.get("memory_long_term", [])
-
-                short = data.get("memory_short_term", [])
-                if hasattr(self.memory, "short_term"):
-                    self.memory.short_term.clear()
-                    for item in short:
-                        self.memory.short_term.append(item)
-
-            self.conversation_memory = data.get("conversation_memory", getattr(self, "conversation_memory", []))
-            self.topic_details = data.get("topic_details", getattr(self, "topic_details", {}))
-            self.topic_stack = data.get("topic_stack", getattr(self, "topic_stack", []))
-            self.current_topic = data.get("current_topic", getattr(self, "current_topic", None))
-
-            self.persistent_state = data.get(
-                "persistent_state",
-                getattr(self, "persistent_state", {"mood": 0.0})
-            )
-
-            self.drives = data.get(
-                "drives",
-                getattr(self, "drives", {
-                    "connection": 0.5,
-                    "curiosity": 0.5,
-                    "safety": 0.5
-                })
-            )
-
-            print("[System] ヒカリの記憶を読み込みました。")
-
-        except Exception as e:
-            print(f"[System WARN] 読み込みに失敗しました。新規状態で起動します: {e}")
-
-
-# HikariCoreに後付け登録する
-    try:
-        HikariCore.save = _hikari_save
-        HikariCore.load = _hikari_load
-    except NameError:
-        # Ensure HikariCore exists so we can attach methods even if class
-        # definition appears later or under a different import ordering.
-        class HikariCore:
-            pass
-
-        HikariCore.save = _hikari_save
-        HikariCore.load = _hikari_load
-
-
 
 # =====================================================================
 # 💻 LET'S NOTE OPTIMIZED OLLAMA ENGINE (16GBメモリ/CPU4スレッド特化・融合版)
@@ -4226,7 +4166,7 @@ if __name__ == "__main__":
             
             # 脳の多層推論層を実行
             response = hikari.chat(user_input)
-
+            print(f"\n[DEBUG RESPONSE] {response}")
             # 最新の会話が刻まれた記憶を元に画面を完全に再描画
             refresh_screen_with_original_features()
             print("\nだんなさま: ", end="", flush=True)
